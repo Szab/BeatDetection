@@ -10,8 +10,8 @@ namespace Szab.BeatDetector
         VERY_LOW = 120,
         LOW = 110,
         NORMAL = 100,
-        HIGH = 75,
-        VERY_HIGH = 64
+        HIGH = 80,
+        VERY_HIGH = 70
     };
 
     public sealed class SpectrumBeatDetector
@@ -35,7 +35,8 @@ namespace Szab.BeatDetector
         // Analysis settings
         private int _SamplingRate;
         private int _DeviceCode;
-        private SensivityLevel _SensivityLevel;
+        private SensivityLevel _BASSSensivity;
+        private SensivityLevel _MIDSSensivity;
 
         // Analysis data
         private float[] _FFTData = new float[4096];
@@ -45,10 +46,11 @@ namespace Szab.BeatDetector
 
         #region Setup methods
 
-        public SpectrumBeatDetector(int DeviceCode, int SamplingRate = 44100, SensivityLevel Sensivity = SensivityLevel.NORMAL)
+        public SpectrumBeatDetector(int DeviceCode, int SamplingRate = 44100, SensivityLevel BASSSensivity = SensivityLevel.NORMAL, SensivityLevel MIDSSensivity = SensivityLevel.NORMAL)
         {
             _SamplingRate = SamplingRate;
-            _SensivityLevel = Sensivity;
+            _BASSSensivity = BASSSensivity;
+            _MIDSSensivity = MIDSSensivity;
             _DeviceCode = DeviceCode;
             Init();
         }
@@ -88,6 +90,17 @@ namespace Szab.BeatDetector
             }
 
             Free();
+        }
+
+        // Sensivity Setters
+        public void SetBassSensivity(SensivityLevel Sensivity)
+        {
+            _BASSSensivity = Sensivity;
+        }
+
+        public void SetMidsSensivity(SensivityLevel Sensivity)
+        {
+            _MIDSSensivity = Sensivity;
         }
 
         #endregion
@@ -149,7 +162,7 @@ namespace Szab.BeatDetector
 
         #endregion
 
-        #region Event handlers
+        #region Event handling
 
         public void Subscribe(BeatDetectedHandler Delegate)
         {
@@ -180,7 +193,10 @@ namespace Szab.BeatDetector
         // Performs FFT analysis in order to detect beat
         private void PerformAnalysis()
         {
-            double[] _Temp = new double[BANDS];
+            // Specifes on which result end which band (dividing it into 10 bands)
+            // 19 - bass, 187 - mids, rest is highs
+            int[] BandRange = { 4, 8, 18, 38, 48, 94, 140, 186, 466, 1022, 22000};
+            double[] BandsTemp = new double[BANDS];
             int n = 0;
 
             // Get FFT
@@ -189,31 +205,29 @@ namespace Szab.BeatDetector
 
             // Calculate the energy of every result and divide it into subbands
             float sum = 0;
-            int k = 0;
+
             for (int i = 2; i < 2048; i = i + 2)
             {
                 float real = _FFTData[i];
                 float complex = _FFTData[i + 1];
                 sum += (float)Math.Sqrt((double)(real * real + complex * complex));
-                k++;
 
-                if(k%Math.Ceiling((double)1024/(double)BANDS) == 0)
+                if(i == BandRange[n])
                 {
-                    _Temp[n++] = (BANDS * sum) / 1024;
+                    BandsTemp[n++] = (BANDS * sum) / 1024;
                     sum = 0;
-                    k=0;
                 }
             }
 
             // Detect beat basing on FFT results
-            DetectBeat(_Temp);
+            DetectBeat(BandsTemp);
 
             // Shift the history register and save new values
             ShiftHistory(1);
 
             for (int i = 0; i < BANDS; i++)
             {
-                _History[i, 0] = _Temp[i];
+                _History[i, 0] = BandsTemp[i];
             }
         }
 
@@ -238,31 +252,36 @@ namespace Szab.BeatDetector
         }
 
         // Detects beat basing on analysis result
+        // Beat detection is marked on the first three bits of the returned value
         private byte DetectBeat(double[] Energies)
         {
+            // Sound height ranges (first 2 is bass, next 6 is mids)
             int Bass = 2;
-            int Mids = 6;
+            int Mids = 8;
 
             double[] avg = CalculateAverages();
             byte result = 0;
 
             for (int i = 0; i < BANDS && result == 0; i++)
             {
+                // Set the C parameter
                 double C = 0;
+
                 if (i < Bass)
                 {
-                    C = 2.3;
+                    C = 2.4 * ((double)_BASSSensivity / 100);
                 }
                 else if (i < Mids)
                 {
-                    C = 1.7;
+                    C = 3 * ((double)_MIDSSensivity / 100);
                 }
                 else
                 {
                     C = 2.3;
                 }
 
-                if(Energies[i] > (C * ((double)_SensivityLevel/100) * avg[i]))
+                // Compare energies in all bands with C*average
+                if(Energies[i] > (C * avg[i]))
                 {
                     byte res = 0;
                     if(i<Bass)
