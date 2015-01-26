@@ -1,4 +1,16 @@
-﻿using System;
+﻿///-------------------------------------------------------------------------///
+///   Namespace:      Szab.BeatDetector                                     ///
+///   Class:          BeatDetector                                          ///
+///   Description:    Real-time BASS.Net-based beat detection class         ///
+///   Author:         Szab                              Date: 26.01.2015    ///
+///                                                                         ///
+///   Notes:          Requires BASS.Net libraries. Detection accuracy may   ///
+///                   be changed by modifying sensivity fields, changing    ///
+///                   history size or changing C parameter calculation      ///
+///                   method.                                               ///
+///-------------------------------------------------------------------------///
+
+using System;
 using System.Threading;
 using Un4seen.Bass;
 using Un4seen.BassWasapi;
@@ -164,14 +176,14 @@ namespace Szab.BeatDetector
 
         #region Event handling
 
-        public void Subscribe(BeatDetectedHandler Delegate)
+        public void Subscribe(BeatDetectedHandler someDelegate)
         {
-            OnDetected += Delegate;
+            OnDetected += someDelegate;
         }
 
-        public void UnSubscribe(BeatDetectedHandler Delegate)
+        public void UnSubscribe(BeatDetectedHandler someDelegate)
         {
-            OnDetected -= Delegate;
+            OnDetected -= someDelegate;
         }
 
         #endregion
@@ -179,13 +191,13 @@ namespace Szab.BeatDetector
         #region Analysis private methods
 
         // Shifts history n places to the right
-        private void ShiftHistory(int n)
+        private void ShiftHistory(int numbeOfPositions)
         {
             for (int i = 0; i < BANDS; i++)
             {
-                for (int j = HISTORY - 1 - n; j >= 0; j--)
+                for (int j = HISTORY - 1 - numbeOfPositions; j >= 0; j--)
                 {
-                    _History[i, j + n] = _History[i, j];
+                    _History[i, j + numbeOfPositions] = _History[i, j];
                 }
             }
         }
@@ -195,10 +207,10 @@ namespace Szab.BeatDetector
         {
             // Specifes on which result end which band (dividing it into 10 bands)
             // 19 - bass, 187 - mids, rest is highs
-            int[] BandRange = { 4, 8, 18, 38, 48, 94, 140, 186, 466, 1022, 22000};
-            double[] BandsTemp = new double[BANDS];
-            int n = 0;
-            int level = BassWasapi.BASS_WASAPI_GetLevel();
+            int[] bandRange = { 4, 8, 18, 38, 48, 94, 140, 186, 466, 1022, 22000};
+            double[] bandsTemp = new double[BANDS];
+            int createdBandsCount = 0;
+            int peakLevel = BassWasapi.BASS_WASAPI_GetLevel();
 
             // Get FFT
             int ret = BassWasapi.BASS_WASAPI_GetData(_FFTData, (int)BASSData.BASS_DATA_FFT1024 | (int)BASSData.BASS_DATA_FFT_COMPLEX); //get channel fft data
@@ -209,33 +221,33 @@ namespace Szab.BeatDetector
 
             for (int i = 2; i < 2048; i = i + 2)
             {
-                float real = _FFTData[i];
-                float complex = _FFTData[i + 1];
-                sum += (float)Math.Sqrt((double)(real * real + complex * complex));
+                float realPart = _FFTData[i];
+                float imaginaryPart = _FFTData[i + 1];
+                sum += (float)Math.Sqrt((double)(realPart * realPart + imaginaryPart * imaginaryPart));
 
-                if(i == BandRange[n])
+                if(i == bandRange[createdBandsCount])
                 {
-                    BandsTemp[n++] = (BANDS * sum) / 1024;
+                    bandsTemp[createdBandsCount++] = (BANDS * sum) / 1024;
                     sum = 0;
                 }
             }
 
             // Detect beat basing on FFT results
-            DetectBeat(BandsTemp, level);
+            DetectBeat(bandsTemp, peakLevel);
 
             // Shift the history register and save new values
             ShiftHistory(1);
 
             for (int i = 0; i < BANDS; i++)
             {
-                _History[i, 0] = BandsTemp[i];
+                _History[i, 0] = bandsTemp[i];
             }
         }
 
         // Calculate the average value of every band
         private double[] CalculateAverages()
         {
-            double[] avg = new double[BANDS];
+            double[] result = new double[BANDS];
 
             for (int i = 0; i < BANDS; i++)
             {
@@ -246,59 +258,62 @@ namespace Szab.BeatDetector
                     sum += _History[i, j];
                 }
 
-                avg[i] = (sum / HISTORY);
+                result[i] = (sum / HISTORY);
             }
 
-            return avg;
+            return result;
         }
 
         // Detects beat basing on analysis result
         // Beat detection is marked on the first three bits of the returned value
-        private byte DetectBeat(double[] Energies, int volume)
+        private byte DetectBeat(double[] bandEnergies, int peakLevel)
         {
-            // Sound height ranges (1, 2 is bass, next 6 is mids)
-            int Bass = 3;
+            // Sound height ranges (0, 1 is bass, next 6 is mids)
+            int Bass = 2;
             int Mids = 6;
 
-            double[] avg = CalculateAverages();
+            double[] averageEnergies = CalculateAverages();
             byte result = 0;
-            double volumelevel = (double)volume / 32768 * 100;   // Volume level in %
+            double peakLevelPercent = (double)peakLevel / 32768 * 100;   // Volume level in %
 
-            for (int i = 0; i < BANDS && result == 0; i++)                    
+            if (peakLevelPercent > 1)   // Reduce false detection
             {
-                // Set the C parameter
-                double C = 0;
+                for (int i = 0; i < BANDS; i++)
+                {
+                    // Set the C parameter
+                    double C;
 
-                if (i < Bass)
-                {
-                    C = 2.3 * ((double)_BASSSensivity / 100);
-                }
-                else if (i < Mids)
-                {
-                    C = 2.89 * ((double)_MIDSSensivity / 100);
-                }
-                else
-                {
-                    C = 3 * ((double)_MIDSSensivity / 100);
-                }
-
-                // Compare energies in all bands with C*average
-                if(Energies[i] > (C * avg[i]) && volumelevel > 1)   // Second rule is for noise reduction
-                {
-                    byte res = 0;
-                    if(i<Bass)
+                    if (i < Bass)
                     {
-                        res = 1;
+                        C = 2.3 * ((double)_BASSSensivity / 100);
                     }
                     else if (i < Mids)
                     {
-                        res = 2;
+                        C = 2.89 * ((double)_MIDSSensivity / 100);
                     }
                     else
                     {
-                        res = 4;
+                        C = 3 * ((double)_MIDSSensivity / 100);
                     }
-                    result = (byte)(result | res);
+
+                    // Compare energies in all bands with C*average
+                    if (bandEnergies[i] > (C * averageEnergies[i]))
+                    {
+                        byte partialResult = 0;
+                        if (i < Bass)
+                        {
+                            partialResult = 1;
+                        }
+                        else if (i < Mids)
+                        {
+                            partialResult = 2;
+                        }
+                        else
+                        {
+                            partialResult = 4;
+                        }
+                        result = (byte)(result | partialResult);
+                    }
                 }
             }
 
