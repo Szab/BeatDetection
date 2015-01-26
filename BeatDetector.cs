@@ -20,7 +20,7 @@ namespace Szab.BeatDetector
 
         // Constants
         private const int BANDS = 10;
-        private const int HISTORY = 20;
+        private const int HISTORY = 50;
 
         // Events
         public delegate void BeatDetectedHandler(byte Value);
@@ -140,7 +140,7 @@ namespace Szab.BeatDetector
                     {
                         //Stopwatch SW = new Stopwatch();
                         //SW.Start();
-                        Thread.Sleep(4);
+                        Thread.Sleep(5);
                         PerformAnalysis();
                         //SW.Stop();
                         //Console.WriteLine(SW.Elapsed);
@@ -198,6 +198,7 @@ namespace Szab.BeatDetector
             int[] BandRange = { 4, 8, 18, 38, 48, 94, 140, 186, 466, 1022, 22000};
             double[] BandsTemp = new double[BANDS];
             int n = 0;
+            int level = BassWasapi.BASS_WASAPI_GetLevel();
 
             // Get FFT
             int ret = BassWasapi.BASS_WASAPI_GetData(_FFTData, (int)BASSData.BASS_DATA_FFT1024 | (int)BASSData.BASS_DATA_FFT_COMPLEX); //get channel fft data
@@ -220,7 +221,7 @@ namespace Szab.BeatDetector
             }
 
             // Detect beat basing on FFT results
-            DetectBeat(BandsTemp);
+            DetectBeat(BandsTemp, level);
 
             // Shift the history register and save new values
             ShiftHistory(1);
@@ -253,35 +254,36 @@ namespace Szab.BeatDetector
 
         // Detects beat basing on analysis result
         // Beat detection is marked on the first three bits of the returned value
-        private byte DetectBeat(double[] Energies)
+        private byte DetectBeat(double[] Energies, int volume)
         {
-            // Sound height ranges (first 2 is bass, next 6 is mids)
-            int Bass = 2;
-            int Mids = 8;
+            // Sound height ranges (1, 2 is bass, next 6 is mids)
+            int Bass = 3;
+            int Mids = 6;
 
             double[] avg = CalculateAverages();
             byte result = 0;
+            double volumelevel = (double)volume / 32768 * 100;   // Volume level in %
 
-            for (int i = 0; i < BANDS && result == 0; i++)
+            for (int i = 0; i < BANDS && result == 0; i++)                    
             {
                 // Set the C parameter
                 double C = 0;
 
                 if (i < Bass)
                 {
-                    C = 2.4 * ((double)_BASSSensivity / 100);
+                    C = 2.3 * ((double)_BASSSensivity / 100);
                 }
                 else if (i < Mids)
                 {
-                    C = 3 * ((double)_MIDSSensivity / 100);
+                    C = 2.89 * ((double)_MIDSSensivity / 100);
                 }
                 else
                 {
-                    C = 2.3;
+                    C = 3 * ((double)_MIDSSensivity / 100);
                 }
 
                 // Compare energies in all bands with C*average
-                if(Energies[i] > (C * avg[i]))
+                if(Energies[i] > (C * avg[i]) && volumelevel > 1)   // Second rule is for noise reduction
                 {
                     byte res = 0;
                     if(i<Bass)
