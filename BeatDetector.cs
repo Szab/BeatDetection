@@ -150,12 +150,8 @@ namespace Szab.BeatDetector
                 {
                     while (true)
                     {
-                        //Stopwatch SW = new Stopwatch();
-                        //SW.Start();
-                        Thread.Sleep(5);
+                        Thread.Sleep(4);
                         PerformAnalysis();
-                        //SW.Stop();
-                        //Console.WriteLine(SW.Elapsed);
                     }
                 });
 
@@ -319,7 +315,10 @@ namespace Szab.BeatDetector
 
             if(result > 0)
             {
-                OnDetected(result);
+                foreach (BeatDetectedHandler Subscriber in OnDetected.GetInvocationList())
+                {
+                    ThreadPool.QueueUserWorkItem(delegate { Subscriber(result); });
+                }
             }
 
             return result;
